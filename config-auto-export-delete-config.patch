@@ -1,0 +1,98 @@
+diff -urw a/src/FileStorageFactory.php b/src/FileStorageFactory.php
+--- a/src/FileStorageFactory.php	2019-11-24 17:24:11.000000000 +0100
++++ b/src/FileStorageFactory.php	2020-01-20 11:42:43.241263679 +0100
+@@ -18,7 +18,11 @@
+    *   The directory name.
+    */
+   public static function getDirectory(): string {
+-    return Drupal::config('config_auto_export.settings')->get('directory');
++    if (null !== Drupal::config('config_auto_export.settings')->get('directory')) {
++        return Drupal::config('config_auto_export.settings')->get('directory');
++    }
++
++    return '';
+   }
+
+   /**
+
+diff -urw a/src/ConfigSubscriber.php b/src/ConfigSubscriber.php
+--- a/src/ConfigSubscriber.php	2019-11-24 17:24:11.000000000 +0100
++++ b/src/ConfigSubscriber.php	2020-01-20 11:42:43.241263679 +0100
+@@ -183,12 +183,39 @@
+       if ($this->existsInConfigSplit($name)) {
+         return;
+       }
++      //If delete config, regenerate the config files
+       $this->configStorage->write($name, $this->configCache->read($name));
+       $this->triggerNeeded = TRUE;
+     }
+   }
+ 
+   /**
++   * Deletes files from the configured active config directory when a
++   * ConfigEvents::DELETE event is dispatched.
++   *
++   * @param ConfigCrudEvent $event
++   */
++  public function onConfigDelete(ConfigCrudEvent $event) {
++    if ($this->active && $this->enabled() && null !== $this->config->get('directory')) {
++      $activeDir = $this->config->get('directory');
++      $object = $event->getConfig();
++      $fileName = $object->getName().'.yml';
++      try {
++          unlink($activeDir.'/'.$fileName);
++      } catch (\Exception $e) {
++          \Drupal::logger('config_auto_export')->error(
++              "Status code @status_code: @message",
++              array(
++                  "@status_code" => $e->getCode(),
++                  "@message" => $e->getMessage(),
++              )
++          );
++      }
++      $this->triggerNeeded = TRUE;
++    }
++  }
++
++  /**
+    * Saves changed config translation to a configurable directory.
+    *
+    * @param \Drupal\language\Config\LanguageConfigOverrideCrudEvent $event
+@@ -205,6 +232,22 @@
+   }
+ 
+   /**
++   * Deletes removed config translation from a configurable directory.
++   *
++   * @param \Drupal\language\Config\LanguageConfigOverrideCrudEvent $event
++   *   Public function onConfigTranslationSave event.
++   */
++  public function onConfigTranslationDelete(LanguageConfigOverrideCrudEvent $event) {
++    if ($this->active && $this->enabled() && null !== $this->config->get('directory')) {
++      /** @var \Drupal\language\Config\LanguageConfigOverride $object */
++      $object = $event->getLanguageConfigOverride();
++      $configLanguageStorage = $this->configStorage->createCollection('language.' . $object->getLangcode());
++      $configLanguageStorage->delete($object->getName());
++      $this->triggerNeeded = TRUE;
++    }
++  }
++
++  /**
+    * Turn off this subscriber on importing configuration.
+    *
+    * @param \Drupal\Core\Config\ConfigImporterEvent $event
+@@ -219,10 +262,14 @@
+    */
+   public static function getSubscribedEvents() {
+     $events[ConfigEvents::SAVE][] = ['onConfigSave', 0];
++    $events[ConfigEvents::DELETE][] = ['onConfigDelete', 0];
+     $events[ConfigEvents::IMPORT_VALIDATE][] = ['onConfigImportValidate', 1024];
+     if (class_exists(LanguageConfigOverrideEvents::class)) {
+       $events[LanguageConfigOverrideEvents::SAVE_OVERRIDE][] = ['onConfigTranslationSave', 0];
+     }
++    if (class_exists(LanguageConfigOverrideEvents::class)) {
++      $events[LanguageConfigOverrideEvents::DELETE_OVERRIDE][] = ['onConfigTranslationDelete', 0];
++    }
+     return $events;
+   }
+ 
